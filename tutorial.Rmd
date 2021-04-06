@@ -371,8 +371,8 @@ We can use tensorboard to monitor our training runs. To track the runs, we have 
 #              output_format = "target_right" 
 # )
 
-# open tensorboard in browser
-tensorflow::tensorboard(tensorboard_path)
+## open tensorboard in browser
+# tensorflow::tensorboard(tensorboard_path)
 ```
 
 The "SCALARS" tab displays accuracy, loss, learning rate and percentage of files seen for each epoch.
