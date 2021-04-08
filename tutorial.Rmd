@@ -237,7 +237,6 @@ trainNetwork(train_type = "lm", # train a language model
              tb_images = TRUE,
              output_format = "target_middle_lstm" # predict character in middle of sequence  
 )
-
 ```
 
 ## Label classification
