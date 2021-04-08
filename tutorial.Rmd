@@ -15,12 +15,13 @@ library(hdf5r)
 library(magrittr)
 library(ggplot2)
 library(deepG)
+library(reticulate)
 ```
 
 # Introduction
 
 The deepG library can be used for applying deep learning on genomic data. The library supports creating neural network architecture,
-automation of data preprocesing (data generator), network training, inference and visualizing feature importances (integrated gradients). 
+automation of data preprocessing (data generator), network training, inference and visualizing feature importance (integrated gradients). 
 
 # Create a model
 
@@ -28,14 +29,17 @@ deepG supports three functions to create a keras model.
 
 ## `create_model_lstm_cnn`
 
-The architecture of this model is $k$ * LSTM, $m$ * CNN and $n$ * dense layers, where $k,m \ge 0$ and $n \ge 1$.   
+The architecture of this model is $k$ * LSTM, $m$ * CNN and $n$ * dense layers, where $k,m \ge 0$ and $n \ge 1$.  
+LSTM (long short-term memory) layers are specifically designed to processes sequential data (order of data is important) by using feedback connections.
+CNN (convolutional neural network) layers are usually applied to images or audio data but can also be used for natural language processing 
+or genomic sequences. Contrary to vanilla feedforward networks, they are able to process spatial relations in the data.  
 The user can choose the size of the individual LSTM, CNN and Dense layers and add additional features to each layer;
 for example the LSTM layer may be bidirectional (runs input in two ways) or stateful (considers dependencies between batches).  
 
-The last dense layer layer has a softmax activation and determines how many targets we want to predict. This output gives a vector of probabilities, i.e. the sum 
-of the vector is 1 and each entry is a probabilty for one class.  
+The last dense layer has a softmax activation and determines how many targets we want to predict. This output gives a vector of probabilities, i.e. the sum 
+of the vector is 1 and each entry is a probability for one class.  
 
-The following implementation creates a model with 3 CNN layer (+ batch normalization), 1 LSTM and 1 dense layer.  
+The following implementation creates a model with 3 CNN layer (+ batch normalization and max pooling), 1 LSTM and 1 dense layer.  
 ```{r}
 model <- create_model_lstm_cnn(
   maxlen = 500, # number of nucleotides processed in one sample
@@ -48,7 +52,9 @@ model <- create_model_lstm_cnn(
 )
 ```
 
-The model expects an input with dimensions (NULL (batch size), maxlen, vocabulary size) and a target with dimension (NULL (batch size), number of targets).
+![model with 3 CNN and 1 LSTM and 1 Dense layer](~/tutorial/images/model.png)
+
+The model expects an input of dimensions (NULL (batch size), maxlen, vocabulary size) and a target of dimension (NULL (batch size), number of targets).
 Maxlen specifies the length of the input sequence. 
 
 ```{r warning=FALSE}
@@ -78,6 +84,8 @@ model <- create_model_lstm_cnn_target_middle(
   pool_size = c(3, 3, 3)
 )
 ```
+
+![model with two input layers](~/tutorial/images/model_target_middle.png)
 
 This architecture can be used to predict a character in the middle of a sequence. For example 
 
@@ -114,7 +122,7 @@ one position. For example, given a sequence \texttt{ACCGGTC} and maxlen = 6, the
 
 Input data must be files in FASTA or FASTQ format and file names must have .fasta or .fastq ending; otherwise files will be ignored. 
 All training and validation data should each be in one folder. deepG uses a data generator to iterate over files in train/validation folder.   
-Before we train our model, we have to decide what our training objetive is. It can be either a language model or label classification.
+Before we train our model, we have to decide what our training objective is. It can be either a language model or label classification.
 
 ```{r warning = FALSE}
 path <- "/home/rmreches/tutorial"
@@ -130,6 +138,45 @@ if (!dir.exists(checkpoint_path)) dir.create(checkpoint_path)
 if (!dir.exists(tensorboard.log)) dir.create(tensorboard.log)
 if (!dir.exists(dir_path)) dir.create(dir_path)
 ```
+
+Our data set for this tutorial consists of 16S sequences and bacterial genomes. 
+
+```{r warning = FALSE}
+cat("number of files in 16S train:",  length(list.files(path_16S_train)), "\n")
+cat("number of files in 16S validation:", length(list.files(path_16S_validation)), "\n")
+cat("number of files in bacteria train:", length(list.files(path_bacteria_train)), "\n")
+cat("number of files in bacteria validation:",  length(list.files(path_bacteria_validation)), "\n")
+
+# print first 16S file 
+print(microseq::readFasta(list.files(path_16S_train, full.names = TRUE)[1]))
+
+seq_length_16_train <- vector("integer", length(path_16S_train))
+i <- 1
+for (file_name in list.files(path_16S_train, full.names = TRUE)) {
+  fasta.file <- microseq::readFasta(file_name)
+  seq_length_16_train[i] <- nchar(fasta.file$Sequence)
+  i <- i + 1
+}
+df_16S <- as.data.frame(seq_length_16_train)
+
+seq_length_bacteria_train <- vector("integer", length(path_bacteria_train))
+i <- 1
+for (file_name in list.files(path_bacteria_train, full.names = TRUE)) {
+  fasta.file <- microseq::readFasta(file_name)
+  seq_length_bacteria_train[i] <- nchar(fasta.file$Sequence)
+  i <- i + 1
+}
+df_bact <- as.data.frame(seq_length_bacteria_train)
+
+p1 <- ggplot(df_16S, aes(x=seq_length_16_train)) +
+  xlab("length of 16S sequences") + 
+  geom_histogram(bins=30)
+p2 <- ggplot(df_bact, aes(x=seq_length_bacteria_train)) + 
+  xlab("length of bacteria sequences") + 
+  geom_histogram(bins=20)
+ggpubr::ggarrange(p1, p2, ncol = 2, nrow = 1)
+```
+
 
 ## Language model
 
@@ -153,13 +200,14 @@ model <- create_model_lstm_cnn(
   layer_dense = c(4),
   vocabulary.size = 4,
   kernel_size = c(12, 12, 12),
-  filters = c(32, 64, 64),
+  filters = c(32, 64, 128),
   pool_size = c(3, 3, 3),
   learning.rate = 0.001
 )
 ```
 
-Next we have to specify the location of our training and validation data and the output format of the data generator    
+Next we have to specify the location of our training and validation data and the output format of the data generator. We 
+randomly select 95% from each file so the generator does not take samples from the same position repeatedly.
 
 ```{r warning = FALSE, message = FALSE}
 
@@ -169,12 +217,12 @@ trainNetwork(train_type = "lm", # train a language model
              path.val = path_16S_validation, # location of validation data
              checkpoint_path = checkpoint_path,
              tensorboard.log = tensorboard.log,
-             validation.split = 0.2, # use 20% of samples for validation compared to train size
+             validation.split = 0.2, # use 20% train size for validation
              run.name = "lm_16S_target_right",
-             batch.size = 256, 
-             epochs = 4, 
-             steps.per.epoch = 10, # 1 epoch = 10 batches
-             step = 500, # take a sample every 500 steps
+             batch.size = 512, 
+             epochs = 8, 
+             steps.per.epoch = 25, # 1 epoch = 20 batches
+             step = 100, # take a sample every 100 steps
              output = list(none = FALSE,
                            checkpoints = TRUE,
                            tensorboard = TRUE,
@@ -183,10 +231,12 @@ trainNetwork(train_type = "lm", # train a language model
                            full_model = FALSE
              ),
              tb_images = TRUE,
-             output_format = "target_right" # predict target at end of sequence 
+             output_format = "target_right", # predict target at end of sequence 
+             proportion_per_file = c(0.95)
+             # randomly select 95% file 
 )
 
-tensorflow::tensorboard(tensorboard.log)
+# tensorflow::tensorboard(tensorboard.log)
 ```
 
 ### Predict character in middle of sequence 
@@ -205,7 +255,7 @@ model <- create_model_lstm_cnn_target_middle(
   layer_dense = c(4),
   vocabulary.size = 4,
   kernel_size = c(12, 12, 12),
-  filters = c(32, 64, 64),
+  filters = c(32, 64, 128),
   pool_size = c(3, 3, 3),
   learning.rate = 0.001
 )
@@ -223,10 +273,10 @@ trainNetwork(train_type = "lm", # train a language model
              tensorboard.log = tensorboard.log,
              validation.split = 0.2, # use 20% of samples for validation compared to train size
              run.name = "lm_16S_target_middle_lstm",
-             batch.size = 256, 
-             epochs = 4, 
-             steps.per.epoch = 10, # 1 epoch = 10 batches
-             step = 500, # take a sample every 500 steps
+             batch.size = 512, 
+             epochs = 8, 
+             steps.per.epoch = 25, # 1 epoch = 25 batches
+             step = 100, # take a sample every 100 steps
              output = list(none = FALSE,
                            checkpoints = TRUE,
                            tensorboard = TRUE,
@@ -235,7 +285,9 @@ trainNetwork(train_type = "lm", # train a language model
                            full_model = FALSE
              ),
              tb_images = TRUE,
-             output_format = "target_middle_lstm" # predict character in middle of sequence  
+             output_format = "target_middle_lstm", # predict character in middle of sequence
+             proportion_per_file = c(0.95)
+             # randomly select 95% of file 
 )
 ```
 
@@ -248,19 +300,21 @@ deepG offers two options to map a label to a sequence
 
 1. the label gets read from the fasta header
 
-2. files from every class are in seperate folders
+2. files from every class are in separate folders
+
+![Example: read class label from header](~/tutorial/images/header.png)
 
 ### Label by folder
 
-We put all data from one class into separate folders. In the following example, we want to classify if a sequence belongs to 16s or bacterial genome. We have to put all 16s/bacteria files into their own folder. In this case the `path` and `path.val` arguments should be vectors, where each entry is the path to one class.    
+We put all data from each class into separate folders. In the following example, we want to classify if a sequence belongs to 16s or bacterial genome. We have to put all 16S/bacteria files into their own folder. In this case the `path` and `path.val` arguments should be vectors, where each entry is the path to one class.    
 ```{r warning = FALSE}
 model <- create_model_lstm_cnn(
   maxlen = 500,
-  layer_lstm = c(32),
-  layer_dense = c(2), # predict two classes 
+  layer_lstm = NULL,
+  layer_dense = c(2), # predict 2 classes
   vocabulary.size = 4,
   kernel_size = c(12, 12, 12),
-  filters = c(32, 64, 64),
+  filters = c(32, 64, 128),
   pool_size = c(3, 3, 3),
   learning.rate = 0.001
 )
@@ -277,10 +331,11 @@ trainNetwork(train_type = "label_folder", # reading label from folder
              tensorboard.log = tensorboard.log,
              validation.split = 0.2, 
              run.name = "16S_vs_bacteria",
-             batch.size = 512, # half of batch is 16s and other half bacteria data
-             epochs = 5, 
-             steps.per.epoch = 15, 
-             step = 500,
+             batch.size = 512, # half of batch is 16S and other half bacteria data
+             epochs = 15, 
+             save_best_only = FALSE,
+             steps.per.epoch = 20, 
+             step = c(100, 500), # smaller step size for 16S
              labelVocabulary = c("16s", "bacteria"), # label names
              output = list(none = FALSE,
                            checkpoints = TRUE,
@@ -290,21 +345,88 @@ trainNetwork(train_type = "label_folder", # reading label from folder
                            full_model = FALSE
              ),
              tb_images = TRUE,
-             proportion_per_file = c(1, 0.05) # randomly select 5% of bacteria file 
+             proportion_per_file = c(0.95, 0.05)
+             # randomly select 95% of 16S and 5% of bacteria files, 
+             # since bacteria files are much larger  
 )
+```
+
+# Checkpoints
+
+We can save the architecture and weights of a model after every epoch using checkpoints. The checkpoints get stored in 
+h5 format. The file names contain the corresponding epoch, loss and accuracy. For example, we can display the checkpoints from
+binary classification model for 16S/bacteria.
+
+```{r warning = FALSE, message = FALSE}
+cp <- list.files(file.path(checkpoint_path, "16S_vs_bacteria_checkpoints"),
+                 full.names = TRUE)
+print(basename(cp))
+```
+
+After training, we can load a trained model and continue training or use the model for predictions/inference.
+Let's create a model with random weights identical to our 16S/bacteria classifier and make some predictions.
+
+```{r warning = FALSE, message = FALSE}
+model <- create_model_lstm_cnn(
+  maxlen = 500,
+  layer_lstm = NULL,
+  layer_dense = c(2), 
+  vocabulary.size = 4,
+  kernel_size = c(12, 12, 12),
+  filters = c(32, 64, 128),
+  pool_size = c(3, 3, 3),
+  learning.rate = 0.001
+)
+
+# evaluate 1000 samples, 500 from each class 
+eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
+                                           path_bacteria_validation),
+                            model = model,
+                            batch.size = 100,
+                            step = 100,
+                            label_vocabulary = c("16s", "bacteria"),
+                            numberOfBatches = 10,
+                            mode = "label_folder",
+                            verbose = FALSE)
+eval_model[["accuracy"]]
+eval_model[["confusion_matrix"]]
+```
+
+As expected, the performance is not better than random guessing. Let's repeat evaluation but load the weights
+of our pretrained model
+
+```{r warning = FALSE, message = FALSE}
+weight_path <- cp[length(cp)]
+model <- keras::load_model_weights_hdf5(model, weight_path)
+
+eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
+                                           path_bacteria_validation),
+                            model = model,
+                            batch.size = 100,
+                            step = 100,
+                            label_vocabulary = c("16s", "bacteria"),
+                            numberOfBatches = 10,
+                            mode = "label_folder",
+                            verbose = FALSE)
+eval_model[["accuracy"]]
+eval_model[["confusion_matrix"]]
 ```
 
 # Inference
 
 Once we have trained a model, we may use the model to get the activations of a certain layer and write the states to an h5 file.
-In the following example we use the binary model trained to classify 16S/bacteria data.
+First, we apply our model to a file from our 16S validation set.
 
 ```{r warning = FALSE, message = FALSE}
-print(model)
+model_path <- "Ep.005-val_loss0.00-val_acc0.999.hdf5"
+model <- keras::load_model_hdf5(model_path, compile = FALSE)
+model <- keras::load_model_weights_hdf5(model, model_path)
+maxlen <- model$input$shape[[2]]
 num_layers <- length(model$get_config()$layers)
 layer_name <- model$get_config()$layers[[num_layers]]$name
 cat("get output at layer", layer_name)
-fasta.path <- list.files(path_16S_validation, full.names = TRUE)[1] # make predictions for 16S file
+fasta.path <- list.files(path_16S_validation, # make predictions for 16S file
+                         full.names = TRUE)[1] 
 fasta.file <- microseq::readFasta(fasta.path)
 head(fasta.file)
 sequence <- fasta.file$Sequence[1]
@@ -326,8 +448,13 @@ We can access the h5 file as follows
 
 ```{r warning = FALSE, message = FALSE}
 states <- readRowsFromH5(h5_path = filename, complete = TRUE)
-colnames(states) <- c("16S", "bacteria")
+colnames(states) <- c("conf_16S", "conf_bacteria")
+rownames(states) <- paste0("sample_", 1:nrow(states))
 head(states)
+ggplot(as.data.frame(states)) +
+  geom_histogram(aes(conf_16S, color = "16S", fill = "16S"), alpha = 0.4) +
+  geom_histogram(aes(conf_bacteria, color = "bacteria", fill = "bacteria"), alpha = 0.4) +
+  xlab("confidence") + ggtitle("model confidence for 16S file")
 ```
 
 The matrix shows the models confidence in its predictions. Every row corresponds to one sample. If the value in the 
@@ -335,23 +462,11 @@ The matrix shows the models confidence in its predictions. Every row corresponds
 
 ## Detect 16S region 
 
-We can use or trained model to detect 16S sequences in a bacterial genome. First, we search for the true rRNA region in the corresponding gff file.
+In the following example we use the binary model trained to classify 16S/bacteria to predict the location of 16S sequences (similar to https://github.com/tseemann/barrnap). We iterate over a new bacteria file (not present in train or validation data)
+and make predictions every 100 steps
 
-```{r warning = FALSE, message = FALSE}
-fasta.path<- file.path(path, "E_faecalis.fasta")
-gff.file <- file.path(path, "E_faecalis.gff")
-gff.data <- rtracklayer::readGFF(gff.file, version = 0,
-                                 columns = NULL, tags = NULL, filter = NULL, nrows = -1,
-                                 raw_data = FALSE)
-rRNA_index <- stringr::str_detect(gff.data$product, "^16S ribosomal") & (gff.data$strand == "+")
-start <- gff.data[rRNA_index, "start"]
-end <- gff.data[rRNA_index, "end"]
-start; end
-```
-
-We iterate over the bacteria file and make a predictions every 100 steps
-
-```{r warning = FALSE, message = FALSE}
+```{r warning = FALSE, message = FALSE, include = FALSE}
+fasta.path <- file.path(path, "E_faecalis.fasta")
 fasta.file <- microseq::readFasta(fasta.path)
 sequence <- fasta.file$Sequence[1]
 filename <- file.path(dir_path, "bacteria_states.h5")
@@ -368,6 +483,8 @@ if (!file.exists(filename)) {
 }  
 ```
 
+We can now plot the model confidence in 16S over the whole genome. 
+
 ```{r warning = FALSE, message = FALSE}
 states <- readRowsFromH5(h5_path = filename, complete = TRUE, getTargetPositions = TRUE)
 pred <- states[[1]]
@@ -380,30 +497,111 @@ df_16S <- df[index_16S_pred, ]
 head(df_16S)
 ```
 
-Let's visualize or models predictions and compare them to the true areas. First we look at the confidence in 16S over the whole genome. 
+Next, we search for the true rRNA region in the corresponding gff file to validate our models predictions.
 
 ```{r warning = FALSE, message = FALSE}
-ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() + geom_line() + ylab("16S confidence") + xlab("sequence position")
+fasta.path <- file.path(path, "E_faecalis.fasta")
+gff.file <- file.path(path, "E_faecalis.gff")
+gff.data <- rtracklayer::readGFF(gff.file, version = 0,
+                                 columns = NULL, tags = NULL, filter = NULL, nrows = -1,
+                                 raw_data = FALSE)
+rRNA_index <- stringr::str_detect(gff.data$product, "^16S ribosomal") &
+  (gff.data$strand == "+")
+start <- gff.data[rRNA_index, "start"]
+end <- gff.data[rRNA_index, "end"]
+cat("start positions of 16S sequences:", start, "\n")
+cat("end positions of 16S sequences:", end, "\n")
+```
+
+Let's visualize or models predictions
+
+```{r warning = FALSE, message = FALSE}
+ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() +
+  geom_line() + ylab("16S confidence") + xlab("end position of sample") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "red")
 ```
 
 Next we may zoom into areas with high 16S confidence, the true 16S regions are shaded grey.
 
 ```{r warning = FALSE, message = FALSE}
-p1 <- ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() + geom_line() +
+p1 <- ggplot(df, aes(x = seq_end - 250, y = conf_16S)) + geom_point() + geom_line() +
   geom_rect(aes(xmin=start[1], xmax=end[1], ymin=0, ymax=Inf),  alpha = 0.01) + 
   xlim(c(start[1] - 500, end[1] + 500)) + 
   ylab("16S confidence") + xlab("sequence position")
-p2 <- ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() + geom_line() +
+p2 <- ggplot(df, aes(x = seq_end - 250, y = conf_16S)) + geom_point() + geom_line() +
   geom_rect(aes(xmin=start[2], xmax=end[2], ymin=0, ymax=Inf),  alpha = 0.01) + 
   xlim(c(start[2] - 500, end[2] + 500)) + 
   ylab("16S confidence") + xlab("sequence position")
 ggpubr::ggarrange(p1, p2, ncol = 1, nrow = 2)
 ```
 
+Finally, let's decrease our step size parameter to 1 and make a predictions for every possible sample around the true 16S regions 
+(add 500 nucleotides to start/end)
+
+```{r warning = FALSE, message = FALSE}
+fasta.file <- microseq::readFasta(fasta.path)
+buffer <- 500
+sequence_16S_1 <- fasta.file$Sequence[1] %>% 
+  substr(start = start[1] - buffer, stop = end[1] + buffer)
+sequence_16S_2 <- fasta.file$Sequence[1] %>% 
+  substr(start = start[2] - buffer, stop = end[2] + buffer)
+
+filename_16S_1 <- file.path(dir_path, "states_16S_1.h5")
+filename_16S_2 <- file.path(dir_path, "states_16S_2.h5")
+
+if (!file.exists(filename_16S_1)) {
+  writeStates(
+    model = model,
+    layer_name = layer_name, 
+    sequence = sequence_16S_1,
+    round_digits = 4,
+    filename = filename_16S_1,
+    batch.size = 500,
+    step = 1)
+}  
+
+if (!file.exists(filename_16S_2)) {
+  writeStates(
+    model = model,
+    layer_name = layer_name, 
+    sequence = sequence_16S_2,
+    round_digits = 4,
+    filename = filename_16S_2,
+    batch.size = 500,
+    step = 1)
+}  
+
+states_1 <- readRowsFromH5(h5_path = filename_16S_1, complete = TRUE, getTargetPositions = TRUE)
+pred_1 <- states_1[[1]]
+position_1 <- start[1] - buffer + 1 + states_1[[2]] - floor(maxlen/2)
+df_1 <- cbind(pred_1, position_1) %>% as.data.frame()
+colnames(df_1) <- c("conf_16S", "conf_bacteria", "seq_end")
+states_2 <- readRowsFromH5(h5_path = filename_16S_2, complete = TRUE, getTargetPositions = TRUE)
+pred_2 <- states_2[[1]]
+position_2 <-  start[2] - buffer + 1 + states_2[[2]] - floor(maxlen/2) 
+df_2 <- cbind(pred_2, position_2) %>% as.data.frame()
+colnames(df_2) <- c("conf_16S", "conf_bacteria", "seq_end")
+```
+
+and plot the results again 
+
+```{r warning = FALSE, message = FALSE}
+p1 <- ggplot(df_1, aes(x = seq_end, y = conf_16S)) + geom_point() + 
+  geom_rect(aes(xmin=start[1], xmax=end[1], ymin=0, ymax=Inf),  alpha = 0.01) + 
+  xlim(c(start[1] - buffer, end[1] + buffer)) + 
+  ylab("16S confidence") + xlab("sequence position") + 
+  geom_smooth()
+p2 <- ggplot(df_2, aes(x = seq_end, y = conf_16S)) + geom_point() + 
+  geom_rect(aes(xmin=start[2], xmax=end[2], ymin=0, ymax=Inf),  alpha = 0.01) + 
+  xlim(c(start[2] - buffer, end[2] + buffer)) + 
+  ylab("16S confidence") + xlab("sequence position") + 
+  geom_smooth()
+ggpubr::ggarrange(p1, p2, ncol = 1, nrow = 2)
+```
+
 # Tensorboard
 
 We can use tensorboard to monitor our training runs. To track the runs, we have to specify a path for tensorboard files and give the run a unique name.   
-
 ```{r warning = FALSE, message = FALSE}
 # trainNetwork(run.name = "unique_run_name",
 #              tensorboard.log = "tensorboard_path",
@@ -411,28 +609,24 @@ We can use tensorboard to monitor our training runs. To track the runs, we have 
 # )
 ```
 
-We can inspect out previous training runs in tensorboard 
+We can inspect our previous training runs in tensorboard 
 
 ```{r warning = FALSE, message = FALSE}
 ## open tensorboard in browser
 # tensorflow::tensorboard(tensorboard.log)
 ```
 
-The "SCALARS" tab displays accuracy,  
+The "SCALARS" tab displays accuracy, loss and percentage of files seen for each epoch
 
 ![accuracy](~/tutorial/images/accuracy.png)
 
-loss
-
 ![loss](~/tutorial/images/loss.png)
-
-and percentage of files seen for each epoch
 
 ![percentage of seen training files](~/tutorial/images/file_perc.png)
 
 In the "IMAGES" tab, we implemented a display of train and validation confusion matrices after every epoch.
-We can see for our binary classification of bacteria/16S sequences, that the model misclassifies more bacteria sequences as 
-16S than vice versa.
+We can see for our binary classification of bacteria/16S sequences, that the model misclassified more bacteria sequences as 
+16S than vice versa in one of the epochs.
 
 ![confusion matrix](~/tutorial/images/cm.png)
 
@@ -440,68 +634,69 @@ The "TEXT" tab shows the `trainNetwork` call as text.
 
 ![trainNetwork call](~/tutorial/images/text.png)
 
-The "HPARAM" tab tracks the hyperparameters of the different runs (maxlen, batch size etc.). This can be used to find 
-the hyperparameter settings for a given task
+The "HPARAM" tab tracks the hyper parameters of the different runs (maxlen, batch size etc.). This can helpful to find 
+the optimal hyper parameter settings for a given task
 
 ![hyperparameters](~/tutorial/images/hp.png)
 
 Further tensorboard documentation can be found [here](https://www.tensorflow.org/tensorboard/get_started).
 
-# Checkpoints
-
-We can save the architecture and weights of a model after every epoch using checkpoints. The checkpoints get stored in 
-h5 format. The file names contain the corresponding epoch, loss and accuracy. For example, we can display the checkpoints from
-binary classification model for 16S/bacteria.
-
-```{r warning = FALSE, message = FALSE}
-cp <- list.files(file.path(checkpoint_path, "16S_vs_bacteria_checkpoints"), full.names = TRUE)
-print(basename(cp))
-```
-
-After training, we can load a trained model and continue training or use the model for predictions/inference.
-Let's create a model with random weights identical to our 16S/bacteria classifier and make some predictions.
-
-```{r warning = FALSE, message = FALSE}
-model <- create_model_lstm_cnn(
-  maxlen = 500,
-  layer_lstm = c(32),
-  layer_dense = c(2), 
-  vocabulary.size = 4,
-  kernel_size = c(12, 12, 12),
-  filters = c(32, 64, 64),
-  pool_size = c(3, 3, 3),
-  learning.rate = 0.001
-)
-
-eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
-                             path_bacteria_validation),
-              model = model,
-              batch.size = 100,
-              step = 100,
-              label_vocabulary = c("16s", "bacteria"),
-              numberOfBatches = 10,
-              mode = "label_folder")
-eval_model[["accuracy"]]
-eval_model[["confusion_matrix"]]
-```
-
-As expected, the performance is not better than random guessing. Let's repeat evaluation but load the weights
-of our pretrained model
-
-```{r warning = FALSE, message = FALSE}
-weight_path <- cp[length(cp)]
-model <- keras::load_model_weights_hdf5(model, weight_path)
-
-eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
-                             path_bacteria_validation),
-              model = model,
-              batch.size = 100,
-              step = 100,
-              label_vocabulary = c("16s", "bacteria"),
-              numberOfBatches = 10,
-              mode = "label_folder")
-eval_model[["accuracy"]]
-eval_model[["confusion_matrix"]]
-```
-
 # Integrated gradient
+
+To visualize which parts of an input sequence is important for the models decision, we may use a method called Integrated Gradient ([paper](https://arxiv.org/pdf/1703.01365.pdf)). This 
+compares the predictions for a given sequence to a baseline sequence (usually a zero tensor or shuffling of original sequence) to determine 
+which features were important for the models decision.
+
+```{r warning = FALSE, message = FALSE}
+# load trained model
+cp <- list.files(file.path(checkpoint_path, "16S_vs_bacteria_checkpoints"),
+                 full.names = TRUE)
+model_path <- cp[length(cp)]
+model <- keras::load_model_hdf5(model_path, compile = FALSE)
+model <- keras::load_model_weights_hdf5(model, model_path)
+
+fasta_path <- file.path(path_16S_validation, "GCF_000427035.1_09mas018883_genomic.16s.fasta.fasta")
+fasta_file <- microseq::readFasta(fasta_path)
+
+# extract input tensors with data generator
+gen <- labelByFolderGenerator(corpus.dir = fasta_path,
+                              batch.size = 1,
+                              maxlen = 500,
+                              reverseComplements = FALSE,
+                              numTargets = 2,
+                              onesColumn = 1,
+                              step = 1,
+                              padding = FALSE)
+
+ig_list <- list()
+seq_len <- nchar(fasta_file$Sequence)
+for (i in 1:(seq_len - 500)) {
+  z <- gen()
+  input <- z[[1]]
+  ig <- integrated_gradients(m_steps = 50,
+                             baseline_type = "shuffle",
+                             input_seq = input,
+                             target_class_idx = 1,
+                             model = model,
+                             num_baseline_repeats = 3)
+
+  py$integrated_grads <- ig
+  py_run_string("attribution_mask = tf.reduce_sum(tf.math.abs(integrated_grads), axis=-1)")
+  attribution_mask <- py$attribution_mask
+  attribution_mask <- as.matrix(attribution_mask, ncol = 1)
+  df <- data.frame(position = (1:(nrow(attribution_mask))) + i - 1, ig_sum = attribution_mask[ , 1])
+  ig_list[[i]] <- df
+}
+
+ig_df <- data.table::rbindlist(ig_list) %>% as.data.frame()
+ig_df <- aggregate(x = ig_df$ig_sum,
+                          by = list(ig_df$position),
+                          FUN = mean)
+names(ig_df) <- c("position", "ig_sum")
+ggplot(ig_df, aes(x = position, y = ig_sum, alpha = 0.001)) +
+  #geom_point() +
+  geom_smooth() + ylab("feature importance") +
+  theme(legend.position = "none") + 
+  geom_line()
+```
+
