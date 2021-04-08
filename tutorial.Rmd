@@ -10,9 +10,11 @@ output:
 ---
 
 ```{r setup, include=FALSE}
+set.seed(123)
 library(hdf5r)
-devtools::load_all()
 library(magrittr)
+library(ggplot2)
+library(deepG)
 ```
 
 # Introduction
@@ -28,20 +30,21 @@ deepG supports three functions to create a keras model.
 
 The architecture of this model is $k$ * LSTM, $m$ * CNN and $n$ * dense layers, where $k,m \ge 0$ and $n \ge 1$.   
 The user can choose the size of the individual LSTM, CNN and Dense layers and add additional features to each layer;
-for example the LSTM layer may be bidirectional or stateful.  
-The last dense layer layer has a softmax activation and determines how many targets we want to predict. 
+for example the LSTM layer may be bidirectional (runs input in two ways) or stateful (considers dependencies between batches).  
 
-The following implementation creates a model with 1 CNN layer (+ batch normalization), 2 LSTM and 2 dense layers.  
+The last dense layer layer has a softmax activation and determines how many targets we want to predict. This output gives a vector of probabilities, i.e. the sum 
+of the vector is 1 and each entry is a probabilty for one class.  
+
+The following implementation creates a model with 3 CNN layer (+ batch normalization), 1 LSTM and 1 dense layer.  
 ```{r}
-library(deepG)
-
 model <- create_model_lstm_cnn(
-  maxlen = 20,
-  layer_lstm = c(8, 8),
-  layer_dense = c(16, 4),
-  vocabulary.size = 4,
-  kernel_size = c(3),
-  filters = c(4)
+  maxlen = 500, # number of nucleotides processed in one sample
+  layer_lstm = c(32), # number of LSTM cells
+  layer_dense = c(4), # number of neurons in last layer (4 targets: A,C,G,T)
+  vocabulary.size = 4, # input vocabulary has size 4 (A,C,G,T)
+  kernel_size = c(12, 12, 12), # size of individual CNN windows for each layer
+  filters = c(32, 64, 64), # number of CNN filters per layer
+  pool_size = c(3, 3, 3) # size of max pooling per layer
 )
 ```
 
@@ -50,12 +53,14 @@ Maxlen specifies the length of the input sequence.
 
 ```{r warning=FALSE}
 batch_size <- 3
-maxlen <- 20
+maxlen <- 500
 vocabulary.size <- 4
 input <- array(rnorm(maxlen * batch_size * vocabulary.size), 
                dim = c(batch_size, maxlen, vocabulary.size))
-pred <- predict(model, input)
-dim(pred)
+pred <- predict(model, input) # make a prediction with random data
+dim(pred) 
+colnames(pred) <- c("A", "C", "G", "T") 
+pred # prediction for initial random weights
 ``` 
 
 ## `create_model_lstm_cnn_target_middle`
@@ -64,12 +69,13 @@ This architecture is closely related to `create_model_lstm_cnn_target` with the 
 
 ```{r}
 model <- create_model_lstm_cnn_target_middle(
-  maxlen = 20,
-  layer_lstm = c(8, 8),
-  layer_dense = c(16, 4),
+  maxlen = 500,
+  layer_lstm = c(32),
+  layer_dense = c(4),
   vocabulary.size = 4,
-  kernel_size = c(3),
-  filters = c(4)
+  kernel_size = c(12, 12, 12),
+  filters = c(32, 64, 64),
+  pool_size = c(3, 3, 3)
 )
 ```
 
@@ -86,6 +92,22 @@ This can be used to combine the 2 tasks
 
 in one model.
 
+## `create_model_wavenet`
+
+This model uses causal dilated convolution layers, which is suitable to handle long sequences. The original paper can be found [here](https://arxiv.org/pdf/1609.03499.pdf)  
+
+```{r warning = FALSE}
+model <- create_model_wavenet(filters = 16, kernel_size = 2, residual_blocks = 2^(2:4),
+                              maxlen = 500, input_tensor = NULL, initial_kernel_size = 32,
+                              initial_filters = 32, output_channels = 4,
+                              output_activation = "softmax", solver = "adam",
+                              learning.rate = 0.001, compile = TRUE) 
+model
+```
+
+The model expects an input and output of dimension (batch size, maxlen, vocabulary.size). The target sequence should be equal to input sequence shifted by 
+one position. For example, given a sequence \texttt{ACCGGTC} and maxlen = 6, the input should correspond to \texttt{ACCGGT} and target to \texttt{CCGGTC}. 
+
 # Training 
 
 ## Preparing the data
@@ -95,16 +117,18 @@ All training and validation data should each be in one folder. deepG uses a data
 Before we train our model, we have to decide what our training objetive is. It can be either a language model or label classification.
 
 ```{r warning = FALSE}
-#### dummy data for now ####
-path_16S_train <- "/home/rmreches/testData/labelDataFolder/train1234"
-path_16S_validation <- "/home/rmreches/testData/labelDataFolder/val1234"
-path_bacteria_train <- "/home/rmreches/testData/labelDataFolder/train4321"
-path_bacteria_validation <- "/home/rmreches/testData/labelDataFolder/val4321"
+path <- "/home/rmreches/tutorial"
+path_16S_train <- file.path(path, "16s/train")
+path_16S_validation <- file.path(path, "16s/validation")
+path_bacteria_train <- file.path(path, "bacteria/train")
+path_bacteria_validation <- file.path(path, "bacteria/validation")
 
-checkpoint_path <- "/home/rmreches/checkpoints"
-tensorboard.log <- "/home/rmreches/tensorboard"
-dir_path <- "/home/rmreches/outputs"
-if (!dir.exists("/home/rmreches/outputs")) dir_path <- dir.create("/home/rmreches/outputs")
+checkpoint_path <- file.path(path, "checkpoints")
+tensorboard.log <- file.path(path, "tensorboard")
+dir_path <- file.path(path, "outputs")
+if (!dir.exists(checkpoint_path)) dir.create(checkpoint_path)
+if (!dir.exists(tensorboard.log)) dir.create(tensorboard.log)
+if (!dir.exists(dir_path)) dir.create(dir_path)
 ```
 
 ## Language model
@@ -120,36 +144,37 @@ or in the middle
 
 ### Language model for 16S (predict next character) 
 
-Say we want to predict the next character in a sequence given the last 500 characters and our text consists of the letters \texttt{A,C,G,T}. First we have to create a model. We may use a model with 1 LSTM, 3 CNN and one dense layer for predictions.   
+Say we want to predict the next character in a sequence given the last 500 characters and our text consists of the letters \texttt{A,C,G,T}. First we have to create a model. We may use a model with 1 LSTM, 3 CNN and 1 dense layer for predictions.   
 
 ```{r warning = FALSE}
 model <- create_model_lstm_cnn(
-               maxlen = 50, ### change later
-               kernel_size = c(12, 12, 12),
-               filters = c(64, 64, 64),
-               pool_size = c(3, 3, 3),
-               layer_lstm = c(32),
-               layer_dense = c(4),
-               learning.rate = 0.001,
-               vocabulary.size = 4)
+  maxlen = 500,
+  layer_lstm = c(32),
+  layer_dense = c(4),
+  vocabulary.size = 4,
+  kernel_size = c(12, 12, 12),
+  filters = c(32, 64, 64),
+  pool_size = c(3, 3, 3),
+  learning.rate = 0.001
+)
 ```
 
 Next we have to specify the location of our training and validation data and the output format of the data generator    
 
 ```{r warning = FALSE, message = FALSE}
 
-trainNetwork(train_type = "lm",
+trainNetwork(train_type = "lm", # train a language model
              model = model,
-             path = path_16S_train,
-             path.val = path_16S_validation,
+             path = path_16S_train, # location of trainig data
+             path.val = path_16S_validation, # location of validation data
              checkpoint_path = checkpoint_path,
              tensorboard.log = tensorboard.log,
              validation.split = 0.2, # use 20% of samples for validation compared to train size
              run.name = "lm_16S_target_right",
-             batch.size = 256,
-             epochs = 10, ####
-             steps.per.epoch = 2, ####
-             step = 50,
+             batch.size = 256, 
+             epochs = 4, 
+             steps.per.epoch = 10, # 1 epoch = 10 batches
+             step = 500, # take a sample every 500 steps
              output = list(none = FALSE,
                            checkpoints = TRUE,
                            tensorboard = TRUE,
@@ -160,6 +185,8 @@ trainNetwork(train_type = "lm",
              tb_images = TRUE,
              output_format = "target_right" # predict target at end of sequence 
              )
+
+tensorflow::tensorboard(tensorboard.log)
 ```
 
 ### Predict character in middle of sequence 
@@ -173,29 +200,44 @@ then first input corresponds to \texttt{ACCG} and second to \texttt{AAGG}. We ma
 
 ```{r warning = FALSE}
 model <- create_model_lstm_cnn_target_middle(
-  maxlen = 50,
-  layer_lstm = c(8, 8),
+  maxlen = 500,
+  layer_lstm = c(32),
   layer_dense = c(4),
-  vocabulary.size = 4 # text consists of A,C,G,T
+  vocabulary.size = 4,
+  kernel_size = c(12, 12, 12),
+  filters = c(32, 64, 64),
+  pool_size = c(3, 3, 3),
+  learning.rate = 0.001
 )
 ```
 
 The `trainNetwork` call is identical to the previous model, except we have to change the output format of the generator by setting `output_format = "target_middle_lstm"`. This reverses the order of the sequence after the target.  
 
 ```{r warning = FALSE, message = FALSE}
-trainNetwork(train_type = "lm", # running a language model 
+
+trainNetwork(train_type = "lm", # train a language model
              model = model,
-             path = path_16S_train,
-             path.val = path_16S_validation,
+             path = path_16S_train, # location of trainig data
+             path.val = path_16S_validation, # location of validation data
              checkpoint_path = checkpoint_path,
              tensorboard.log = tensorboard.log,
-             run.name = "lm_16S_target_middle",
-             steps.per.epoch = 5, # use 5 batches per epoch
-             validation.split = 0.2, # use 20% of samples for validation compared to train
-             batch.size = 8,
-             epochs = 2,
-             output_format = "target_middle_lstm" # predict target in middle of sequence 
-)
+             validation.split = 0.2, # use 20% of samples for validation compared to train size
+             run.name = "lm_16S_target_middle_lstm",
+             batch.size = 256, 
+             epochs = 4, 
+             steps.per.epoch = 10, # 1 epoch = 10 batches
+             step = 500, # take a sample every 500 steps
+             output = list(none = FALSE,
+                           checkpoints = TRUE,
+                           tensorboard = TRUE,
+                           log = FALSE,
+                           serialize_model = FALSE,
+                           full_model = FALSE
+             ),
+             tb_images = TRUE,
+             output_format = "target_middle_lstm" # predict character in middle of sequence  
+             )
+
 ```
 
 ## Label classification
@@ -211,18 +253,18 @@ deepG offers two options to map a label to a sequence
 
 ### Label by folder
 
-We put all data from one class into separate folders. Say we want to classify if a sequence belongs to viral or bacterial genomen. Then
-we have to put all virus/bacteria files into their own folder. In this case the `path` and `path.val` arguments should be vectors, where each entry is the path to one class.    
+We put all data from one class into separate folders. In the following example, we want to classify if a sequence belongs to 16s or bacterial genome. We have to put all 16s/bacteria files into their own folder. In this case the `path` and `path.val` arguments should be vectors, where each entry is the path to one class.    
 ```{r warning = FALSE}
 model <- create_model_lstm_cnn(
-               maxlen = 50,  #######
-               kernel_size = c(12, 12, 12),
-               filters = c(64, 64, 64),
-               pool_size = c(3, 3, 3),
-               layer_lstm = c(32),
-               layer_dense = c(2),
-               learning.rate = 0.001,
-               vocabulary.size = 4)
+  maxlen = 500,
+  layer_lstm = c(32),
+  layer_dense = c(2), # predict two classes 
+  vocabulary.size = 4,
+  kernel_size = c(12, 12, 12),
+  filters = c(32, 64, 64),
+  pool_size = c(3, 3, 3),
+  learning.rate = 0.001
+)
 ```
 
 ```{r warning = FALSE, message = FALSE}
@@ -234,33 +276,36 @@ trainNetwork(train_type = "label_folder", # reading label from folder
                           path_bacteria_validation),
              checkpoint_path = checkpoint_path,
              tensorboard.log = tensorboard.log,
-             steps.per.epoch = 5, # use 5 batches per epoch
-             validation.split = 0.2, # use 20% of samples for validation compared to training 
-             batch.size = 8,
+             validation.split = 0.2, 
              run.name = "16S_vs_bacteria",
-             epochs = 2,
+             batch.size = 256, # half of batch is 16s and other half bacteria data
+             epochs = 6, 
+             steps.per.epoch = 25, 
              step = 500,
-             labelVocabulary = c("16S", "bacteria"), # names of classes
-             output = list(none = FALSE, 
-                           checkpoints = TRUE, 
+             labelVocabulary = c("16s", "bacteria"), # label names
+             output = list(none = FALSE,
+                           checkpoints = TRUE,
                            tensorboard = TRUE,
                            log = FALSE,
                            serialize_model = FALSE,
                            full_model = FALSE
-                         )
+             ),
+             tb_images = TRUE,
+             proportion_per_file = c(1, 0.05) # randomly select 5% of bacteria file 
 )
 ```
 
 # Inference
 
 Once we have trained a model, we may use the model to get the activations of a certain layer and write the states to an h5 file.
+In the following example we use the binary model trained to classify 16S/bacteria data.
 
 ```{r warning = FALSE, message = FALSE}
 print(model)
 num_layers <- length(model$get_config()$layers)
 layer_name <- model$get_config()$layers[[num_layers]]$name
 cat("get output at layer", layer_name)
-fasta.path <- list.files(path_16S_validation, full.names = TRUE)[1]
+fasta.path <- list.files(path_16S_validation, full.names = TRUE)[1] # make predictions for 16S file
 fasta.file <- microseq::readFasta(fasta.path)
 head(fasta.file)
 sequence <- fasta.file$Sequence[1]
@@ -278,7 +323,7 @@ if (!file.exists(filename)) {
 }  
 ```
 
-We can access the h5 file as follows 
+We can access the h5 file as follows
 
 ```{r warning = FALSE, message = FALSE}
 states <- readRowsFromH5(h5_path = filename, complete = TRUE)
@@ -286,62 +331,74 @@ colnames(states) <- c("16S", "bacteria")
 head(states)
 ```
 
-# Features
+The matrix shows the models confidence in its predictions. Every row corresponds to one sample. If the value in the 
+16s column is > 0.500, the model will classify the sample as 16s.
 
-## Additional input vector
+### Inference II 
 
-It is possible to feed a network additional information associated to a sequence. This information needs to be in a csv file. If all sequences in one file share the same label, the csv file should have one column named "file". If the label gets mapped to the header name, the csv file needs to have a column names "header". 
-
-We may add some additional input to our data
+We can use or trained model to detect 16S sequences in a bacterial genome. First, we search for the true rRNA region in the corresponding gff file.
 
 ```{r warning = FALSE, message = FALSE}
-# dummy_files <- list.files(file.path(dir_path, "train_files_1"))
-# dummy_files
-# 
-# df <- data.frame(file = dummy_files,
-#                  label_1 = c(0, 1), label_2 = c(1, 0), label_3 = c(1, 0))
-# df
-# write.csv(x = df, file = file.path(dir_path, "add_input.csv"), row.names = FALSE)
+fasta.path<- file.path(path, "E_faecalis.fasta")
+gff.file <- file.path(path, "E_faecalis.gff")
+gff.data <- rtracklayer::readGFF(gff.file, version = 0,
+                                 columns = NULL, tags = NULL, filter = NULL, nrows = -1,
+                                 raw_data = FALSE)
+rRNA_index <- stringr::str_detect(gff.data$product, "^16S ribosomal") & (gff.data$strand == "+")
+start <- gff.data[rRNA_index, "start"]
+end <- gff.data[rRNA_index, "end"]
+start; end
 ```
 
-If we add the path to the csv file, the generator will map additional input to sequences: 
+We iterate over the bacteria file and make a predictions every 100 steps
 
 ```{r warning = FALSE, message = FALSE}
-# gen <- fastaFileGenerator(corpus.dir = file.path(dir_path, "train_files_1"),
-#                           batch.size = 1,
-#                           maxlen = 5,
-#                           output_format = "target_right",
-#                           added_label_path = file.path(dir_path, "add_input.csv"),
-#                           add_input_as_seq = FALSE # don't treat input as sequence
-# )
-# z <- gen()
-# added_label_input <- z[[1]][[1]]
-# added_label_input
-# sequence_input <- z[[1]][[2]]
-# sequence_input[1, , ]
-# target <- z[[2]] 
-# target
+fasta.file <- microseq::readFasta(fasta.path)
+sequence <- fasta.file$Sequence[1]
+filename <- file.path(dir_path, "bacteria_states.h5")
+
+if (!file.exists(filename)) {
+  writeStates(
+    model = model,
+    layer_name = layer_name, 
+    sequence = sequence,
+    round_digits = 4,
+    filename = filename,
+    batch.size = 500,
+    step = 100)
+}  
 ```
 
-If we want to train a network with additional labels, we have to add an additional input layer.
+```{r warning = FALSE, message = FALSE}
+states <- readRowsFromH5(h5_path = filename, complete = TRUE, getTargetPositions = TRUE)
+pred <- states[[1]]
+position <- states[[2]] - 1
+df <- cbind(pred, position) %>% as.data.frame()
+colnames(df) <- c("conf_16S", "conf_bacteria", "seq_end")
+head(df)
+index_16S_pred <- df[ , 1] > 0.5
+df_16S <- df[index_16S_pred, ]
+df_16S
+```
+
+Let's visualize or models predictions and compare them to the true areas. First we look at the confidence in 16S over the whole genome. 
 
 ```{r warning = FALSE, message = FALSE}
-# model <- create_model_lstm_cnn(
-#   maxlen = 5,
-#   layer_lstm = c(8, 8),
-#   layer_dense = c(4),
-#   label_input = 3 # additional input vector has length 3
-# )
-# 
-# trainNetwork(train_type = "lm", 
-#              model = model,
-#              path = file.path(dir_path, "train_files_1"),
-#              path.val = file.path(dir_path, "validation_files_1"),
-#              added_label_path = file.path(dir_path, "add_input.csv"),
-#              steps.per.epoch = 5,
-#              batch.size = 8,
-#              epochs = 2
-# )
+ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() + geom_line() + ylab("16S confidence")
+```
+
+Next we may zoom into areas with high 16S confidence.
+
+```{r warning = FALSE, message = FALSE}
+p1 <- ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() + geom_line() +
+  geom_rect(aes(xmin=start[1], xmax=end[1], ymin=0, ymax=Inf),  alpha = 0.01) + 
+  xlim(c(start[1] - 1000, end[1] + 1000)) + 
+  ylab("16S confidence") + xlab("sequence position")
+p2 <- ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() + geom_line() +
+  geom_rect(aes(xmin=start[2], xmax=end[2], ymin=0, ymax=Inf),  alpha = 0.01) + 
+  xlim(c(start[2] - 1000, end[2] + 1000)) + 
+  ylab("16S confidence") + xlab("sequence position")
+ggpubr::ggarrange(p1, p2, ncol = 1, nrow = 2)
 ```
 
 ## Tensorboard
@@ -349,7 +406,7 @@ If we want to train a network with additional labels, we have to add an addition
 We can use tensorboard to monitor our training runs. To track the runs, we have to specify a path for tensorboard files and give the run a unique name.   
 
 ```{r warning = FALSE, message = FALSE}
-# tensorboard_path <- file.path(dir_path, "tensorboard")
+# tensorboard_path <- tensorboard.log
 # if (!dir.exists(tensorboard_path)) dir.create(tensorboard_path)
 # model <- create_model_lstm_cnn()
 # run.name <- "run_1"
