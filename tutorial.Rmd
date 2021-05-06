@@ -193,7 +193,7 @@ or in the middle
 
 Say we want to predict the next character in a sequence given the last 500 characters and our text consists of the letters \texttt{A,C,G,T}. First we have to create a model. We may use a model with 1 LSTM, 3 CNN and 1 dense layer for predictions.   
 
-```{r warning = FALSE}
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 model <- create_model_lstm_cnn(
   maxlen = 500,
   layer_lstm = c(32),
@@ -217,11 +217,11 @@ trainNetwork(train_type = "lm", # train a language model
              path.val = path_16S_validation, # location of validation data
              checkpoint_path = checkpoint_path,
              tensorboard.log = tensorboard.log,
-             validation.split = 0.2, # use 20% train size for validation
+             validation.split = 0.2, # use 20% of  train size for validation
              run.name = "lm_16S_target_right",
-             batch.size = 512, 
-             epochs = 8, 
-             steps.per.epoch = 25, # 1 epoch = 20 batches
+             batch.size = 256, 
+             epochs = 5, 
+             steps.per.epoch = 15, # 1 epoch = 15 batches
              step = 100, # take a sample every 100 steps
              output = list(none = FALSE,
                            checkpoints = TRUE,
@@ -233,7 +233,7 @@ trainNetwork(train_type = "lm", # train a language model
              tb_images = TRUE,
              output_format = "target_right", # predict target at end of sequence 
              proportion_per_file = c(0.95)
-             # randomly select 95% file 
+             # randomly select 95% of file 
 )
 
 # tensorflow::tensorboard(tensorboard.log)
@@ -248,7 +248,7 @@ sequence: \texttt{ACCG}\texttt{\color{blue}{T}}\texttt{GGAA}
 
 then first input corresponds to \texttt{ACCG} and second to \texttt{AAGG}. We may create a model with two input layers using the `create_model_cnn_lstm_target_middle`
 
-```{r warning = FALSE}
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 model <- create_model_lstm_cnn_target_middle(
   maxlen = 500,
   layer_lstm = c(32),
@@ -271,11 +271,11 @@ trainNetwork(train_type = "lm", # train a language model
              path.val = path_16S_validation, # location of validation data
              checkpoint_path = checkpoint_path,
              tensorboard.log = tensorboard.log,
-             validation.split = 0.2, # use 20% of samples for validation compared to train size
+             validation.split = 0.2, # use 20% of train size for validation
              run.name = "lm_16S_target_middle_lstm",
-             batch.size = 512, 
-             epochs = 8, 
-             steps.per.epoch = 25, # 1 epoch = 25 batches
+             batch.size = 256, 
+             epochs = 5, 
+             steps.per.epoch = 15, # 1 epoch = 15 batches
              step = 100, # take a sample every 100 steps
              output = list(none = FALSE,
                            checkpoints = TRUE,
@@ -285,7 +285,7 @@ trainNetwork(train_type = "lm", # train a language model
                            full_model = FALSE
              ),
              tb_images = TRUE,
-             output_format = "target_middle_lstm", # predict character in middle of sequence
+             output_format = "target_middle_lstm", # predict character in middle 
              proportion_per_file = c(0.95)
              # randomly select 95% of file 
 )
@@ -307,7 +307,7 @@ deepG offers two options to map a label to a sequence
 ### Label by folder
 
 We put all data from each class into separate folders. In the following example, we want to classify if a sequence belongs to 16s or bacterial genome. We have to put all 16S/bacteria files into their own folder. In this case the `path` and `path.val` arguments should be vectors, where each entry is the path to one class.    
-```{r warning = FALSE}
+```{r warning = FALSE, results = 'hide'}
 model <- create_model_lstm_cnn(
   maxlen = 500,
   layer_lstm = NULL,
@@ -331,10 +331,10 @@ trainNetwork(train_type = "label_folder", # reading label from folder
              tensorboard.log = tensorboard.log,
              validation.split = 0.2, 
              run.name = "16S_vs_bacteria",
-             batch.size = 512, # half of batch is 16S and other half bacteria data
-             epochs = 15, 
+             batch.size = 256, # half of batch is 16S and other half bacteria data
+             epochs = 5, 
              save_best_only = FALSE,
-             steps.per.epoch = 20, 
+             steps.per.epoch = 15, 
              step = c(100, 500), # smaller step size for 16S
              labelVocabulary = c("16s", "bacteria"), # label names
              output = list(none = FALSE,
@@ -366,7 +366,7 @@ print(basename(cp))
 After training, we can load a trained model and continue training or use the model for predictions/inference.
 Let's create a model with random weights identical to our 16S/bacteria classifier and make some predictions.
 
-```{r warning = FALSE, message = FALSE}
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 model <- create_model_lstm_cnn(
   maxlen = 500,
   layer_lstm = NULL,
@@ -388,6 +388,9 @@ eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
                             numberOfBatches = 10,
                             mode = "label_folder",
                             verbose = FALSE)
+```
+
+```{r warning = FALSE, message = FALSE}
 eval_model[["accuracy"]]
 eval_model[["confusion_matrix"]]
 ```
@@ -395,10 +398,9 @@ eval_model[["confusion_matrix"]]
 As expected, the performance is not better than random guessing. Let's repeat evaluation but load the weights
 of our pretrained model
 
-```{r warning = FALSE, message = FALSE}
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 weight_path <- cp[length(cp)]
 model <- keras::load_model_weights_hdf5(model, weight_path)
-
 eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
                                            path_bacteria_validation),
                             model = model,
@@ -408,6 +410,10 @@ eval_model <- evaluateFasta(fasta.path = c(path_16S_validation,
                             numberOfBatches = 10,
                             mode = "label_folder",
                             verbose = FALSE)
+```
+
+
+```{r warning = FALSE, message = FALSE}
 eval_model[["accuracy"]]
 eval_model[["confusion_matrix"]]
 ```
@@ -417,10 +423,13 @@ eval_model[["confusion_matrix"]]
 Once we have trained a model, we may use the model to get the activations of a certain layer and write the states to an h5 file.
 First, we apply our model to a file from our 16S validation set.
 
+```{r warning = FALSE, message = FALSE, results = 'hide'}
+model <- keras::load_model_hdf5(weight_path, compile = FALSE)
+model <- keras::load_model_weights_hdf5(model, weight_path)
+```
+
+
 ```{r warning = FALSE, message = FALSE}
-model_path <- "Ep.005-val_loss0.00-val_acc0.999.hdf5"
-model <- keras::load_model_hdf5(model_path, compile = FALSE)
-model <- keras::load_model_weights_hdf5(model, model_path)
 maxlen <- model$input$shape[[2]]
 num_layers <- length(model$get_config()$layers)
 layer_name <- model$get_config()$layers[[num_layers]]$name
@@ -431,7 +440,9 @@ fasta.file <- microseq::readFasta(fasta.path)
 head(fasta.file)
 sequence <- fasta.file$Sequence[1]
 filename <- file.path(dir_path, "states.h5")
+```
 
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 if (!file.exists(filename)) {
   writeStates(
     model = model,
@@ -462,15 +473,21 @@ The matrix shows the models confidence in its predictions. Every row corresponds
 
 ## Detect 16S region 
 
-In the following example we use the binary model trained to classify 16S/bacteria to predict the location of 16S sequences (similar to https://github.com/tseemann/barrnap). We iterate over a new bacteria file (not present in train or validation data)
-and make predictions every 100 steps
+In the following example we use the binary model trained to classify 16S/bacteria to predict the location of 16S sequences (similar to https://github.com/tseemann/barrnap). We use the same model architecture as before, but load the weights of a model that was trained on more data and for a longer time. We iterate over a new bacteria file (not present in train or validation data) and make predictions every 100 steps
 
 ```{r warning = FALSE, message = FALSE, include = FALSE}
+# load pretrained model
+model_path <- "pretrained_models/bact_16S_model.hdf5"
+model <- keras::load_model_hdf5(model_path, compile = FALSE)
+model <- keras::load_model_weights_hdf5(model, model_path)
+
 fasta.path <- file.path(path, "E_faecalis.fasta")
 fasta.file <- microseq::readFasta(fasta.path)
 sequence <- fasta.file$Sequence[1]
 filename <- file.path(dir_path, "bacteria_states.h5")
+```
 
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 if (!file.exists(filename)) {
   writeStates(
     model = model,
@@ -483,7 +500,6 @@ if (!file.exists(filename)) {
 }  
 ```
 
-We can now plot the model confidence in 16S over the whole genome. 
 
 ```{r warning = FALSE, message = FALSE}
 states <- readRowsFromH5(h5_path = filename, complete = TRUE, getTargetPositions = TRUE)
@@ -513,12 +529,17 @@ cat("start positions of 16S sequences:", start, "\n")
 cat("end positions of 16S sequences:", end, "\n")
 ```
 
-Let's visualize or models predictions
+We can now plot the models confidence in 16S over the whole genome. 
 
 ```{r warning = FALSE, message = FALSE}
 ggplot(df, aes(x = seq_end, y = conf_16S)) + geom_point() +
   geom_line() + ylab("16S confidence") + xlab("end position of sample") +
-  geom_hline(yintercept=0.5, linetype="dashed", color = "red")
+  geom_hline(yintercept=0.8, linetype="dashed", color = "red") +
+  annotate("segment", xend = start[1], x = start[1], y = -0.2, yend = -0.02,
+           colour = "blue", size = 1, arrow = arrow()) +
+  annotate("segment", xend = start[2], x = start[2], y = -0.2, yend = -0.02,
+           colour = "blue", size = 1, arrow = arrow()) +
+  annotate("text", x = mean(c(start[1], start[2])), y = -0.1, label = "16S regions", color = "blue")
 ```
 
 Next we may zoom into areas with high 16S confidence, the true 16S regions are shaded grey.
@@ -647,15 +668,16 @@ To visualize which parts of an input sequence is important for the models decisi
 compares the predictions for a given sequence to a baseline sequence (usually a zero tensor or shuffling of original sequence) to determine 
 which features were important for the models decision.
 
-```{r warning = FALSE, message = FALSE}
+```{r warning = FALSE, message = FALSE, results = 'hide'}
 # load trained model
-cp <- list.files(file.path(checkpoint_path, "16S_vs_bacteria_checkpoints"),
-                 full.names = TRUE)
-model_path <- cp[length(cp)]
+model_path <- "pretrained_models/bact_16S_model.hdf5"
 model <- keras::load_model_hdf5(model_path, compile = FALSE)
 model <- keras::load_model_weights_hdf5(model, model_path)
+```
 
-fasta_path <- file.path(path_16S_validation, "GCF_000427035.1_09mas018883_genomic.16s.fasta.fasta")
+```{r warning = FALSE, message = FALSE}
+fasta_path <- file.path(path_16S_validation, 
+                        "GCF_000427035.1_09mas018883_genomic.16s.fasta.fasta")
 fasta_file <- microseq::readFasta(fasta_path)
 
 # extract input tensors with data generator
@@ -678,15 +700,17 @@ for (i in 1:(seq_len - 500)) {
                              input_seq = input,
                              target_class_idx = 1,
                              model = model,
-                             num_baseline_repeats = 3)
+                             num_baseline_repeats = 2)
 
   py$integrated_grads <- ig
   py_run_string("attribution_mask = tf.reduce_sum(tf.math.abs(integrated_grads), axis=-1)")
   attribution_mask <- py$attribution_mask
   attribution_mask <- as.matrix(attribution_mask, ncol = 1)
-  df <- data.frame(position = (1:(nrow(attribution_mask))) + i - 1, ig_sum = attribution_mask[ , 1])
+  df <- data.frame(position = (1:(nrow(attribution_mask))) + i - 1,
+                   ig_sum = attribution_mask[ , 1])
   ig_list[[i]] <- df
 }
+#saveRDS(ig_list, dir_path)
 
 ig_df <- data.table::rbindlist(ig_list) %>% as.data.frame()
 ig_df <- aggregate(x = ig_df$ig_sum,
