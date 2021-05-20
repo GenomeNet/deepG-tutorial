@@ -469,7 +469,7 @@ ggplot(as.data.frame(states)) +
 ```
 
 The matrix shows the models confidence in its predictions. Every row corresponds to one sample. If the value in the 
-16s column is > 0.500, the model will classify the sample as 16s.
+16S column is > 0.500, the model will classify the sample as 16S.
 
 ## Detect 16S region 
 
@@ -692,25 +692,26 @@ gen <- labelByFolderGenerator(corpus.dir = fasta_path,
 
 ig_list <- list()
 seq_len <- nchar(fasta_file$Sequence)
-for (i in 1:(seq_len - 500)) {
-  z <- gen()
-  input <- z[[1]]
-  ig <- integrated_gradients(m_steps = 50,
-                             baseline_type = "shuffle",
-                             input_seq = input,
-                             target_class_idx = 1,
-                             model = model,
-                             num_baseline_repeats = 2)
-
-  py$integrated_grads <- ig
-  py_run_string("attribution_mask = tf.reduce_sum(tf.math.abs(integrated_grads), axis=-1)")
-  attribution_mask <- py$attribution_mask
-  attribution_mask <- as.matrix(attribution_mask, ncol = 1)
-  df <- data.frame(position = (1:(nrow(attribution_mask))) + i - 1,
-                   ig_sum = attribution_mask[ , 1])
-  ig_list[[i]] <- df
-}
-#saveRDS(ig_list, dir_path)
+# for (i in 1:(seq_len - 500)) {
+#   z <- gen()
+#   input <- z[[1]]
+#   ig <- integrated_gradients(m_steps = 50,
+#                              baseline_type = "shuffle",
+#                              input_seq = input,
+#                              target_class_idx = 1,
+#                              model = model,
+#                              num_baseline_repeats = 10)
+# 
+#   py$integrated_grads <- ig
+#   py_run_string("attribution_mask = tf.reduce_sum(tf.math.abs(integrated_grads), axis=-1)")
+#   attribution_mask <- py$attribution_mask
+#   attribution_mask <- as.matrix(attribution_mask, ncol = 1)
+#   df <- data.frame(position = (1:(nrow(attribution_mask))) + i - 1,
+#                    ig_sum = attribution_mask[ , 1])
+#   ig_list[[i]] <- df
+# }
+# saveRDS(ig_list, paste0(dir_path, "/ig_list.rds"))
+ig_list <- readRDS(paste0(dir_path, "/ig_list.rds"))
 
 ig_df <- data.table::rbindlist(ig_list) %>% as.data.frame()
 ig_df <- aggregate(x = ig_df$ig_sum,
