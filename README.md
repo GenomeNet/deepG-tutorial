@@ -218,6 +218,7 @@ As expected, the performance is not better than random guessing. Let’s repeat 
 ```r
 weight_path <- cp[length(cp)]
 model <- keras::load_model_weights_hdf5(model, weight_path)
+```
 
 now we run the evaluation again
 
