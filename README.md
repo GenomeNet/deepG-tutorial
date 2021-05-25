@@ -236,7 +236,7 @@ eval_model[["accuracy"]]
 
 ```
 ## [1] 0.995
-````
+```
 
 ```r
 eval_model[["confusion_matrix"]]
@@ -293,7 +293,7 @@ sequence <- fasta.file$Sequence[1]
 filename <- file.path(dir_path, "states.h5")
 ```
 
-now we do the prediction
+now we do the prediction using a sliding window over the sequence with a stepsize of 1 defined with `step = 1`
 
 ```
 if (!file.exists(filename)) {
@@ -303,7 +303,8 @@ if (!file.exists(filename)) {
         sequence = sequence,
         round_digits = 4,
         filename = filename,
-        batch.size = 10)
+        batch.size = 10,
+        step = 1)
 }
 
 and acess the file as follows
