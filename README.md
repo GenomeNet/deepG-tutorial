@@ -103,7 +103,7 @@ cat("number of files in 16S train:", length(list.files(path_16S_train)), "\n")
 cat("number of files in bacteria train:", length(list.files(path_bacteria_train)), "\n")
 ```
 
-### Step 3. Training the momdel
+### Step 3. Training the model
 
 We need to specify our settings to the `trainNetwork` function, especially
 - `train_type` - set to `"label_folder"` since we have a folder per class
